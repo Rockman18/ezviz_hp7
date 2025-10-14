@@ -14,9 +14,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entities = []
     if getattr(api, "supports_gate", False):
-        entities.append(EzvizHp7Button(api, serial, "unlock_gate", "Sblocca Cancello"))
+        entities.append(EzvizHp7Button(api, serial, "unlock_gate", "unlock_gate"))
     if getattr(api, "supports_door", False):
-        entities.append(EzvizHp7Button(api, serial, "unlock_door", "Sblocca Porta"))
+        entities.append(EzvizHp7Button(api, serial, "unlock_door", "unlock_door"))
     async_add_entities(entities)
 
 class EzvizHp7Button(ButtonEntity):
@@ -40,12 +40,12 @@ class EzvizHp7Button(ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle button press."""
-        _LOGGER.warning("EZVIZ HP7: premuto bottone '%s' (%s)", self._action, self._serial)
+        _LOGGER.warning("EZVIZ HP7: pressed button '%s' (%s)", self._action, self._serial)
         if self._action == "unlock_gate":
             ok = await self.hass.async_add_executor_job(self._api.unlock_gate, self._serial)
             _LOGGER.log(logging.INFO if ok else logging.ERROR,
-                        "EZVIZ HP7: 'Sblocca Cancello' %s.", "OK" if ok else "FALLITO")
+                        "EZVIZ HP7: 'Unlock Gate' %s.", "OK" if ok else "FAILED")
         elif self._action == "unlock_door":
             ok = await self.hass.async_add_executor_job(self._api.unlock_door, self._serial)
             _LOGGER.log(logging.INFO if ok else logging.ERROR,
-                        "EZVIZ HP7: 'Sblocca Porta' %s.", "OK" if ok else "FALLITO")
+                        "EZVIZ HP7: 'Unlock Door' %s.", "OK" if ok else "FAILED")

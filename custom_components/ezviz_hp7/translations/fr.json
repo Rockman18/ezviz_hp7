@@ -1,0 +1,52 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connecter EZVIZ HP7",
+        "description": "Saisissez vos identifiants EZVIZ et la région."
+      },
+      "pick_serial": {
+        "title": "Sélectionner l'appareil",
+        "description": "Choisissez le numéro de série de votre HP7."
+      }
+    },
+    "error": {
+      "auth": "Échec de la connexion. Vérifiez les identifiants/région."
+    },
+    "abort": {
+      "no_devices": "Aucun appareil trouvé dans le compte."
+    }
+  },
+  "services": {
+    "unlock_gate": {
+      "name": "Déverrouiller le portail",
+      "description": "Déverrouiller le portail via le cloud EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Numéro de série",
+          "description": "Numéro de série de l'appareil."
+        }
+      }
+    },
+    "unlock_door": {
+      "name": "Déverrouiller la porte",
+      "description": "Déverrouiller la porte via le cloud EZVIZ.",
+      "fields": {
+        "serial": {
+          "name": "Numéro de série",
+          "description": "Numéro de série de l'appareil."
+        }
+      }
+    }
+  },
+  "entity": {
+    "button": {
+      "unlock_gate": {
+        "name": "Déverrouiller le portail"
+      },
+      "unlock_door": {
+        "name": "Déverrouiller la porte"
+      }
+    }
+  }
+}
