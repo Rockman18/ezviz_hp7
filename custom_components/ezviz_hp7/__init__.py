@@ -10,9 +10,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     region = entry.data["region"]
     serial = entry.data["serial"]
 
-    api = Hp7Api(username, password, region)
+    token = entry.data.get("token")
+
+    api = Hp7Api(username, password, region, token=token)
     await hass.async_add_executor_job(api.login)
-    # NEW: rileva i comandi supportati dalla tua CLI 1.0.1.6
+
     await hass.async_add_executor_job(api.detect_capabilities, serial)
 
     coordinator = Hp7Coordinator(hass, api, serial)
@@ -22,6 +24,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         "api": api,
         "serial": serial,
         "coordinator": coordinator,
+        "token": api._token,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

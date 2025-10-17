@@ -19,14 +19,16 @@ SENSORS = [
     ("name", "Nome Dispositivo", None, None, "mdi:label", None),
     ("version", "Firmware", None, None, "mdi:update", None),
     ("status", "Stato", None, None, "mdi:power", lambda v: "online" if v == 1 else "offline"),
-    ("wifiInfos.signal", "WiFi Segnale", None, "%", "mdi:wifi", None),
+#    ("signal", "WiFi Segnale", None, "%", "mdi:wifi",
+#     lambda v: v if isinstance(v, (int, float)) else None),
+#    ("ssid", "SSID WiFi", None, None, "mdi:wifi", None),
     ("local_ip", "IP Locale", None, None, "mdi:ip", None),
     ("wan_ip", "IP WAN", None, None, "mdi:wan", None),
-    ("last_alarm_time", "Ultimo Allarme", SensorDeviceClass.TIMESTAMP, None, "mdi:alarm-light",
-     lambda v: None if not v else __import__("datetime").datetime.strptime(v, "%Y-%m-%d %H:%M:%S")),
-    ("last_alarm_type_name", "Tipo Ultimo Allarme", None, None, "mdi:alarm-light-outline", None),
-    ("Seconds_Last_Trigger", "Secondi da Ultimo Trigger", SensorDeviceClass.DURATION, "s", "mdi:timer-outline", None),
+    ("pir_status", "Stato PIR", None, None, "mdi:motion-sensor", lambda v: "attivo" if v else "inattivo"),
+#    ("disk_capacity", "Stato Disco", None, None, "mdi:harddisk", None),
 ]
+
+
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -72,7 +74,6 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data or {}
         val = _dig(data, self._path)
 
-        # TIMESTAMP
         if self._attr_device_class == SensorDeviceClass.TIMESTAMP:
             if not val:
                 return None
@@ -84,14 +85,12 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
             except Exception:
                 return None
 
-        # DURATION
         if self._attr_device_class == SensorDeviceClass.DURATION:
             try:
                 return float(val)
             except (TypeError, ValueError):
                 return None
 
-        # default
         if self._transform:
             try:
                 val = self._transform(val)
@@ -102,18 +101,25 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        if self._path != "status":
-            return {}
+        """Restituisce attributi extra per Home Assistant."""
         data = self.coordinator.data or {}
         return {
             "device_category": data.get("device_category"),
             "device_sub_category": data.get("device_sub_category"),
+            "pir_status": data.get("pir_status"),
+            "motion_trigger": data.get("motion_trigger"),
+            "seconds_last_trigger": data.get("seconds_last_trigger"),
+            "disk_capacity": data.get("disk_capacity"),
+            "battery_level": data.get("battery_level"),
             "alarm_notify": data.get("alarm_notify"),
             "alarm_schedules_enabled": data.get("alarm_schedules_enabled"),
-            "PIR_Status": data.get("PIR_Status"),
-            "Motion_Trigger": data.get("Motion_Trigger"),
-            "cam_timezone": data.get("cam_timezone"),
-            "supported_channels": data.get("supported_channels"),
-            "ssid": _dig(data, "wifiInfos.ssid"),
-            "signal": _dig(data, "wifiInfos.signal"),
+            "night_vision": data.get("night_vision"),
+            "alarm_light_luminance": data.get("alarm_light_luminance"),
+            "ssid": data.get("ssid"),
+            "signal": data.get("signal"),
+            "firmware": data.get("version"),
+            "ip_local": data.get("local_ip"),
+            "ip_wan": data.get("wan_ip"),
+            "device_name": data.get("name"),
         }
+
