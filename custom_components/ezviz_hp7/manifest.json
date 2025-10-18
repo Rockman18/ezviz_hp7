@@ -10,5 +10,5 @@
   "loggers": ["ezviz"],
   "supports_reload": true,
   "requirements": [],
-  "version": "0.1.3"
+  "version": "0.1.4"
 }
