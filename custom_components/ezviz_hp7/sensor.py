@@ -16,20 +16,37 @@ def _dig(data: dict, path: str, default=None):
     return cur
 
 SENSORS = [
+    # Identità e stato di base
     ("name", "Nome Dispositivo", None, None, "mdi:label", None),
     ("version", "Firmware", None, None, "mdi:update", None),
-    ("status", "Stato", None, None, "mdi:power", lambda v: "online" if v == 1 else "offline"),
-#    ("signal", "WiFi Segnale", None, "%", "mdi:wifi",
-#     lambda v: v if isinstance(v, (int, float)) else None),
-#    ("ssid", "SSID WiFi", None, None, "mdi:wifi", None),
+    ("status", "Stato", None, None, "mdi:power", lambda v: "online" if v in (1, "1", True, "online") else "offline"),
+
+    # Rete
+    ("signal", "WiFi Segnale", None, "%", "mdi:wifi",
+     lambda v: v if isinstance(v, (int, float)) else None),
+    ("ssid", "SSID WiFi", None, None, "mdi:wifi", None),
     ("local_ip", "IP Locale", None, None, "mdi:ip", None),
     ("wan_ip", "IP WAN", None, None, "mdi:wan", None),
-    ("pir_status", "Stato PIR", None, None, "mdi:motion-sensor", lambda v: "attivo" if v else "inattivo"),
-#    ("disk_capacity", "Stato Disco", None, None, "mdi:harddisk", None),
+
+    # Sensori e stato operativo
+    ("pir_status", "PIR Movimento", None, None, "mdi:motion-sensor",
+     lambda v: "attivo" if v in (1, "1", True, "true") else "inattivo"),
+
+    ("motion", "Movimento", None, None, "mdi:run",
+     lambda v: "rilevato" if v in (1, "1", True, "true") else "nessuno"),
+
+    # Ultimi eventi / diagnostica
+    ("last_alarm_time", "Ultimo Allarme", None, None, "mdi:clock-alert", None),
+    ("alarm_name", "Tipo Allarme", None, None, "mdi:alert", None),
+    ("seconds_last_trigger", "Secondi Ultimo Movimento", None, "s", "mdi:timer", None),
+
+    # Snapshot / foto ultima rilevazione
+#    ("last_alarm_pic", "Ultima Istantanea", None, None, "mdi:camera", None),
+
+    # Aggiornamenti firmware
+    ("upgrade_available", "Aggiornamento Disponibile", None, None, "mdi:update",
+     lambda v: "sì" if v in (1, "1", True, "true") else "no"),
 ]
-
-
-
 
 async def async_setup_entry(hass, entry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
@@ -97,29 +114,3 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
             except Exception:
                 pass
         return val
-    
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        """Restituisce attributi extra per Home Assistant."""
-        data = self.coordinator.data or {}
-        return {
-            "device_category": data.get("device_category"),
-            "device_sub_category": data.get("device_sub_category"),
-            "pir_status": data.get("pir_status"),
-            "motion_trigger": data.get("motion_trigger"),
-            "seconds_last_trigger": data.get("seconds_last_trigger"),
-            "disk_capacity": data.get("disk_capacity"),
-            "battery_level": data.get("battery_level"),
-            "alarm_notify": data.get("alarm_notify"),
-            "alarm_schedules_enabled": data.get("alarm_schedules_enabled"),
-            "night_vision": data.get("night_vision"),
-            "alarm_light_luminance": data.get("alarm_light_luminance"),
-            "ssid": data.get("ssid"),
-            "signal": data.get("signal"),
-            "firmware": data.get("version"),
-            "ip_local": data.get("local_ip"),
-            "ip_wan": data.get("wan_ip"),
-            "device_name": data.get("name"),
-        }
-

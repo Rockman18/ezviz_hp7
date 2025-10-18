@@ -104,40 +104,29 @@ class Hp7Api:
         try:
             camera = EzvizCamera(self._client, serial)
             cam_status = camera.status(refresh=True)
-            _LOGGER.info("EZVIZ HP7 RAW CAMERA JSON: %s", cam_status)
 
             wifi_info = cam_status.get("WIFI", {})
-            ssid = wifi_info.get("ssid")
-            signal = wifi_info.get("signal")
 
-            disk_cap = cam_status.get("diskCapacity")
-            if isinstance(disk_cap, list):
-                disk_cap = ", ".join(disk_cap)
-            elif isinstance(disk_cap, str) and "," in disk_cap:
-                disk_cap = disk_cap.replace(",", ", ")
-
+            _LOGGER.info("EZVIZ HP7 RAW CAMERA JSON: %s", cam_status)
+            
             return {
-                "name": cam_status.get("name"),
-                "version": cam_status.get("version"),
-                "status": cam_status.get("status"),
-                "last_snapshot": cam_status.get("last_alarm_pic"),
-                "last_alarm_time": cam_status.get("last_alarm_time"),
+                "name": cam_status.get("name"), #Nome
+                "version": cam_status.get("version"), #Versione firmware
+                "upgrade_available": cam_status.get("upgrade_available"), #Disponibilità aggiornamneto? true/false
+                "status": cam_status.get("status"), #Disponibilità aggiornamneto? true/false
+                "wan_ip": cam_status.get("wan_ip"), #Indirizzo ip locale
+                "pir_status": cam_status.get("PIR_Status"), #Presenza di movimento? 1/0
+                "motion": cam_status.get("Motion_Trigger"), #Presenza di movimento? true/false
+                "seconds_last_trigger": cam_status.get("Seconds_Last_Trigger"), #Secondi da ultimo movimento 0.0
+                "last_alarm_time": cam_status.get("last_alarm_time"), #Data ultimo allarme 2025-10-17 13:51:37
+                "last_alarm_pic": cam_status.get("last_alarm_pic"), #Pic ultima rilevazione
                 "alarm_name": cam_status.get("last_alarm_type_name"),
-                "motion": cam_status.get("Motion_Trigger"),
-                "pir_status": cam_status.get("PIR_Status"),
-                "ssid": ssid,
-                "signal": signal,
+                #Info Wifi
+                "ssid": wifi_info.get("ssid"),
+                "signal": wifi_info.get("signal"),
                 "local_ip": cam_status.get("local_ip") or wifi_info.get("address"),
-                "wan_ip": cam_status.get("wan_ip"),
-                "disk_capacity": disk_cap or "N/A",
             }
 
         except Exception as e:
             _LOGGER.warning("get_status fallita per %s: %s", serial, e)
             return {}
-    
-    
-    
-    
-
-    

@@ -42,12 +42,21 @@ class Hp7LastSnapshotCamera(Camera, CoordinatorEntity):
             return None
 
         session = async_get_clientsession(self.hass)
+        headers = {
+            "User-Agent": "EZVIZ/5.0",
+            "Authorization": f"Bearer {self.coordinator.api._token.get('access_token')}"
+        }
+
         try:
-            async with session.get(url, timeout=15) as resp:
+            async with session.get(url, headers=headers, timeout=15) as resp:
                 if resp.status == 200:
                     return await resp.read()
-        except Exception:
+                else:
+                    _LOGGER.warning("Snapshot fetch failed: %s %s", resp.status, await resp.text())
+        except Exception as e:
+            _LOGGER.warning("Errore download snapshot da %s: %s", url, e)
             return None
+    
 
     @property
     def supported_features(self) -> int:
