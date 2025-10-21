@@ -2,19 +2,51 @@
   "config": {
     "step": {
       "user": {
-        "title": "Collega EZVIZ HP7",
-        "description": "Inserisci le credenziali EZVIZ e la regione."
+        "title": "Connect EZVIZ HP7",
+        "description": "Enter your EZVIZ credentials and region."
       },
       "pick_serial": {
-        "title": "Seleziona dispositivo",
-        "description": "Scegli il serial del tuo HP7."
+        "title": "Select Device",
+        "description": "Choose the serial number of your HP7."
       }
     },
     "error": {
-      "auth": "Login fallito. Controlla credenziali/region."
+      "auth": "Login failed. Check credentials/region."
     },
     "abort": {
-      "no_devices": "Nessun dispositivo trovato nell'account."
+      "no_devices": "No devices found in the account."
+    }
+  },
+  "services": {
+    "unlock_gate": {
+      "name": "Unlock gate",
+      "description": "Unlock the gate via EZVIZ cloud.",
+      "fields": {
+        "serial": {
+          "name": "Serial",
+          "description": "Serial number of the device."
+        }
+      }
+    },
+    "unlock_door": {
+      "name": "Unlock door",
+      "description": "Unlock the door via EZVIZ cloud.",
+      "fields": {
+        "serial": {
+          "name": "Serial",
+          "description": "Serial number of the device."
+        }
+      }
+    }
+  },
+  "entity": {
+    "button": {
+      "unlock_gate": {
+        "name": "Unlock Gate"
+      },
+      "unlock_door": {
+        "name": "Unlock Door"
+      }
     }
   }
 }
