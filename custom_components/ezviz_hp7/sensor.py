@@ -62,7 +62,7 @@ class Hp7Sensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._serial = serial
         self._path = path
-        self._attr_name = name
+        self._attr_name = f"{path}"
         self._attr_unique_id = f"{DOMAIN}_{serial}_sensor_{path.replace('.', '_')}"
         self._attr_device_class = device_class
         self._unit = unit
