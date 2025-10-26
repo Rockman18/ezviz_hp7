@@ -91,11 +91,6 @@
         }
       }
     },
-    "binary_sensor": {
-      "motion_trigger": {
-        "name": "Movimento"
-      }
-    },
     "button": {
       "unlock_gate": {
         "name": "Sblocca Cancello"

@@ -24,10 +24,6 @@ The following files were updated to use translation keys instead of hardcoded It
 - Modified `Hp7Sensor.__init__()` to use `_attr_translation_key` instead of `_attr_name`
 - State values now use English keys (`"online"/"offline"`, `"active"/"inactive"`, etc.) that are translated in the JSON files
 
-#### binary_sensor.py
-- Updated `MAP` to use translation key `"motion_trigger"` instead of Italian name
-- Modified `Hp7Binary.__init__()` to use `_attr_translation_key` instead of `_attr_name`
-
 #### button.py
 - Removed hardcoded Italian button names
 - Updated to use `_attr_translation_key` with values `"unlock_gate"` and `"unlock_door"`
@@ -51,7 +47,6 @@ Each translation file follows Home Assistant's standard structure:
   },
   "entity": {
     "sensor": { ... },           // Sensor entity names and states
-    "binary_sensor": { ... },    // Binary sensor entity names
     "button": { ... }            // Button entity names
   },
   "services": {

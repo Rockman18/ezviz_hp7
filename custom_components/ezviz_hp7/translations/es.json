@@ -91,11 +91,6 @@
         }
       }
     },
-    "binary_sensor": {
-      "motion_trigger": {
-        "name": "Movimiento"
-      }
-    },
     "button": {
       "unlock_gate": {
         "name": "Desbloquear Portón"

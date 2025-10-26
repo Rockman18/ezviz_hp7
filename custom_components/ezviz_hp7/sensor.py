@@ -3,7 +3,7 @@ from typing import Any, Optional
 from datetime import datetime, timedelta
 from homeassistant.util import dt as dt_util
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 
@@ -15,6 +15,15 @@ def _dig(data: dict, path: str, default=None):
         cur = cur[p]
     return cur
 
+DIAGNOSTIC_KEYS = {
+    "signal",
+    "ssid",
+    "local_ip",
+    "wan_ip",
+    "upgrade_available",
+    "seconds_last_trigger",
+}
+
 SENSORS = [
     # Identity and basic status
     ("name", "name", None, None, "mdi:label", None),
@@ -22,16 +31,12 @@ SENSORS = [
     ("status", "status", None, None, "mdi:power", lambda v: "online" if v in (1, "1", True, "online") else "offline"),
 
     # Network
-    ("signal", "signal", None, "%", "mdi:wifi",
-     lambda v: v if isinstance(v, (int, float)) else None),
+    ("signal", "signal", None, "%", "mdi:wifi", lambda v: v if isinstance(v, (int, float)) else None),
     ("ssid", "ssid", None, None, "mdi:wifi", None),
     ("local_ip", "local_ip", None, None, "mdi:ip", None),
     ("wan_ip", "wan_ip", None, None, "mdi:wan", None),
 
-    # Sensors and operational status
-    ("pir_status", "pir_status", None, None, "mdi:motion-sensor",
-     lambda v: "active" if v in (1, "1", True, "true") else "inactive"),
-
+    # SOLO questo movimento testuale
     ("motion", "motion", None, None, "mdi:run",
      lambda v: "detected" if v in (1, "1", True, "true") else "none"),
 
@@ -40,19 +45,25 @@ SENSORS = [
     ("alarm_name", "alarm_name", None, None, "mdi:alert", None),
     ("seconds_last_trigger", "seconds_last_trigger", None, "s", "mdi:timer", None),
 
-    # Snapshot / last detection photo
-#    ("last_alarm_pic", "last_alarm_pic", None, None, "mdi:camera", None),
-
     # Firmware updates
     ("upgrade_available", "upgrade_available", None, None, "mdi:update",
      lambda v: "yes" if v in (1, "1", True, "true") else "no"),
 ]
 
+
 async def async_setup_entry(hass, entry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
     serial = data["serial"]
-    ents = [Hp7Sensor(coordinator, serial, *cfg) for cfg in SENSORS]
+
+    ents = []
+    for cfg in SENSORS:
+        ent = Hp7Sensor(coordinator, serial, *cfg)
+        if cfg[0] in DIAGNOSTIC_KEYS:
+            ent._attr_entity_category = EntityCategory.DIAGNOSTIC
+            ent._attr_entity_registry_enabled_default = False
+        ents.append(ent)
+
     async_add_entities(ents)
 
 class Hp7Sensor(CoordinatorEntity, SensorEntity):

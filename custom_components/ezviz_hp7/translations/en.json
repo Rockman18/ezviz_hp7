@@ -91,11 +91,6 @@
         }
       }
     },
-    "binary_sensor": {
-      "motion_trigger": {
-        "name": "Motion"
-      }
-    },
     "button": {
       "unlock_gate": {
         "name": "Unlock Gate"
