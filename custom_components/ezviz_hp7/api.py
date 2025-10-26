@@ -22,7 +22,15 @@ class Hp7Api:
         self._token = token
         self._client: Optional[EzvizClient] = None
 
-        self._url = "apiieu.ezvizlife.com" if region == "eu" else "apiisa.ezvizlife.com"
+        region_urls = {
+            "eu": "apiieu.ezvizlife.com",
+            "us": "apiisa.ezvizlife.com",
+            "cn": "apiicn.ezvizlife.com",
+            "as": "apiias.ezvizlife.com",
+            "sa": "apiisa.ezvizlife.com",
+            "ru": "apirus.ezvizru.com",
+        }
+        self._url = region_urls.get(region, "apiieu.ezvizlife.com")
 
         self.supports_door = True
         self.supports_gate = True
