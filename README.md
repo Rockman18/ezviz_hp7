@@ -2,6 +2,17 @@
 
 This is a **custom Home Assistant integration** that adds support for the **EZVIZ HP7 video intercom**.  
 It allows you to **unlock the door and the gate remotely**, monitor device status, and expose the main functions of the HP7 within your Home Assistant environment.
+
+---
+
+NOTE:
+
+If you're having trouble logging in, please note that EZVIZ only allows you to have 10 devices connected:
+
+EZVIZ -> User -> Login settings -> Manage terminals
+
+Delete any unused devices or free up at least 1 space.
+
 ---
 
 ## ✨ Features
@@ -27,8 +38,6 @@ It allows you to **unlock the door and the gate remotely**, monitor device statu
 
 ## 📦 Installation simple
 [![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=bobsilvio&repository=ezviz_hp7&category=integration)
-
----
 
 ---
 
