@@ -38,13 +38,27 @@ SIMPLE_MAP = [
 ]
 
 ALARM_MAP = [
-    (["Smart Detection Alarm"], "Citofono - Allarme Smart Detection", "smart_detection_alarm", None, "mdi:run"),
-    (["Intelligent Detection Alarm"], "Citofono - Allarme Intelligente", "intelligent_detection_alarm", None, "mdi:account-search"),
-    (["Your doorbell is ringing"], "Citofono – Campanello", "doorbell_ringing", None, "mdi:doorbell"),
-    (["EZVIZ app open the gate", "open the gate"], "Citofono – Cancello", "gate_open", None, "mdi:gate-open"),
-    (["EZVIZ app unlock the lock"], "Citofono – Serratura", "unlock_lock", None, "mdi:lock-open-variant"),
-]
+    (["Smart Detection Alarm"],
+     "Allarme Smart Detection", "smart_detection_alarm", None, "mdi:run"),
 
+    (["Intelligent Detection Alarm"],
+     "Allarme Intelligente", "intelligent_detection_alarm", None, "mdi:account-search"),
+
+    (["Your doorbell is ringing"],
+     "Citofono – Campanello", "doorbell_ringing", None, "mdi:doorbell"),
+
+    ([
+        "EZVIZ app open the gate",
+        "Monitor open the gate"
+     ],
+     "Citofono – Cancello", "gate_open", None, "mdi:gate-open"),
+
+    ([
+        "EZVIZ app unlock the lock",
+        "Monitor unlock the lock"
+     ],
+     "Citofono – Serratura", "unlock_lock", None, "mdi:lock-open-variant"),
+]
 
 async def async_setup_entry(hass, entry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
@@ -139,7 +153,8 @@ class Hp7BinaryAlarm(CoordinatorEntity, BinarySensorEntity):
             self._off_unsub()
 
         def _cb(_now):
-            self.async_write_ha_state()
+            self._off_unsub = None
+            self.hass.add_job(self.async_write_ha_state)
 
         self._off_unsub = async_call_later(self.hass, PULSE_SECONDS, _cb)
 
