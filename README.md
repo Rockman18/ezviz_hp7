@@ -92,6 +92,8 @@ action:
 Pull requests and issues are welcome!  
 If you encounter bugs or want to suggest new features, open an [issue](../../issues).
 
+This Integration use API from RanierM26 (https://github.com/RenierM26/pyEzvizApi)
+
 ---
 
 ## 📜 License
