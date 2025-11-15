@@ -5,9 +5,15 @@
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/Bobsilvio/ezviz_hp7/",
-  "iot_class": "cloud_push",
+  "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Bobsilvio/ezviz_hp7/issues",
   "loggers": ["ezviz"],
-  "requirements": [],
-  "version": "0.1.7"
+  "requirements": [
+    "pycryptodome==3.23.0",
+    "pandas==2.3.3",
+    "requests==2.32.5",
+    "paho-mqtt==2.1.0",
+    "xmltodict==1.0.2"
+  ],
+  "version": "0.1.8"
 }
