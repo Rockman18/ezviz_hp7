@@ -6,13 +6,25 @@ the Ezviz API to descriptive names.
 """
 
 from enum import Enum, unique
+from hashlib import md5
+import uuid
 
-from .utils import generate_unique_code
 
-FEATURE_CODE = generate_unique_code()
+def _generate_unique_code() -> str:
+    """Generate a deterministic unique code for this host."""
+
+    mac_int = uuid.getnode()
+    mac_str = ":".join(f"{(mac_int >> i) & 0xFF:02x}" for i in range(40, -1, -8))
+    return md5(mac_str.encode("utf-8")).hexdigest()
+
+
+FEATURE_CODE = _generate_unique_code()
 XOR_KEY = b"\x0c\x0eJ^X\x15@Rr"
 DEFAULT_TIMEOUT = 25
 MAX_RETRIES = 3
+# Unified message API default subtype that returns all alarm categories.
+DEFAULT_UNIFIEDMSG_STYPE = "92"
+HIK_ENCRYPTION_HEADER = b"hikencodepicture"
 REQUEST_HEADER = {
     "featureCode": FEATURE_CODE,
     "clientType": "3",
@@ -34,7 +46,7 @@ APP_SECRET = "17454517-cc1c-42b3-a845-99b4a15dd3e6"
 
 @unique
 class MessageFilterType(Enum):
-    """Message filter types for unified list."""
+    """Fine-grained message filters used by the unified list API."""
 
     FILTER_TYPE_MOTION = 2402
     FILTER_TYPE_PERSON = 2403
@@ -42,6 +54,16 @@ class MessageFilterType(Enum):
     FILTER_TYPE_SOUND = 2405
     FILTER_TYPE_ALL_ALARM = 2401
     FILTER_TYPE_SYSTEM_MESSAGE = 2101
+
+
+@unique
+class UnifiedMessageSubtype(str, Enum):
+    """High-level subtype bundles supported by the Ezviz mobile app."""
+
+    # Equivalent to the "All alarm" chip in the official app UI.
+    ALL_ALARMS = "92"
+    # Same comma-separated bundle returned by msgDefaultSubtype() inside the app.
+    DEFAULT_APP_SUBTYPE = "9904,2701"
 
 
 @unique

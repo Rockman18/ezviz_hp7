@@ -5,22 +5,18 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from typing import Any, cast
 
-from .utils import coerce_int, decode_json
+from .utils import WILDCARD_STEP, coerce_int, decode_json, first_nested
 
 
 def _feature_video_section(camera_data: Mapping[str, Any]) -> dict[str, Any]:
     """Return the nested Video feature section from feature info payload."""
 
-    feature = camera_data.get("FEATURE_INFO")
-    if not isinstance(feature, Mapping):
-        return {}
-
-    for group in feature.values():
-        if isinstance(group, Mapping):
-            video = group.get("Video")
-            if isinstance(video, MutableMapping):
-                return cast(dict[str, Any], video)
-
+    video = first_nested(
+        camera_data,
+        ("FEATURE_INFO", WILDCARD_STEP, "Video"),
+    )
+    if isinstance(video, MutableMapping):
+        return cast(dict[str, Any], video)
     return {}
 
 
@@ -126,6 +122,25 @@ def optionals_dict(camera_data: Mapping[str, Any]) -> dict[str, Any]:
     return optionals_mapping(camera_data)
 
 
+def custom_voice_volume_config(camera_data: Mapping[str, Any]) -> dict[str, int] | None:
+    """Return current CustomVoice volume configuration."""
+
+    optionals = optionals_mapping(camera_data)
+    config = optionals.get("CustomVoice_Volume")
+    config = decode_json(config)
+    if not isinstance(config, Mapping):
+        return None
+
+    volume = coerce_int(config.get("volume"))
+    mic = coerce_int(config.get("microphone_volume"))
+    result: dict[str, int] = {}
+    if isinstance(volume, int):
+        result["volume"] = volume
+    if isinstance(mic, int):
+        result["microphone_volume"] = mic
+    return result or None
+
+
 def iter_algorithm_entries(camera_data: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
     """Yield entries from the AlgorithmInfo optionals list."""
 
@@ -192,8 +207,8 @@ def _normalize_port_list(value: Any) -> list[dict[str, Any]] | None:
         return None
 
     normalized: list[dict[str, Any]] = []
-    for entry in value:
-        entry = decode_json(entry)
+    for raw_entry in value:
+        entry = decode_json(raw_entry)
         if not isinstance(entry, Mapping):
             return None
         port = coerce_int(entry.get("portNo"))
@@ -209,57 +224,68 @@ def normalize_port_security(payload: Any) -> dict[str, Any]:
 
     seen: set[int] = set()
 
+    def _apply_hint(
+        candidate: dict[str, Any] | None, hint_value: bool | None
+    ) -> dict[str, Any] | None:
+        if (
+            candidate is not None
+            and "enabled" not in candidate
+            and isinstance(hint_value, bool)
+        ):
+            candidate["enabled"] = hint_value
+        return candidate
+
+    def _walk_mapping(obj: Mapping[str, Any], hint: bool | None) -> dict[str, Any] | None:
+        obj_id = id(obj)
+        if obj_id in seen:
+            return None
+        seen.add(obj_id)
+
+        enabled_local = obj.get("enabled")
+        if isinstance(enabled_local, bool):
+            hint = enabled_local
+
+        ports = _normalize_port_list(obj.get("portSecurityList"))
+        if ports is not None:
+            return {
+                "portSecurityList": ports,
+                "enabled": bool(enabled_local)
+                if isinstance(enabled_local, bool)
+                else bool(hint)
+                if isinstance(hint, bool)
+                else True,
+            }
+
+        for key in ("PortSecurity", "value", "data", "NetworkSecurityProtection"):
+            if key in obj:
+                candidate = _apply_hint(_walk(obj[key], hint), hint)
+                if candidate:
+                    return candidate
+
+        for value in obj.values():
+            candidate = _apply_hint(_walk(value, hint), hint)
+            if candidate:
+                return candidate
+
+        return None
+
+    def _walk_iterable(values: Iterable[Any], hint: bool | None) -> dict[str, Any] | None:
+        for item in values:
+            candidate = _walk(item, hint)
+            if candidate:
+                return candidate
+        return None
+
     def _walk(obj: Any, hint: bool | None = None) -> dict[str, Any] | None:
         obj = decode_json(obj)
         if obj is None:
             return None
 
         if isinstance(obj, Mapping):
-            obj_id = id(obj)
-            if obj_id in seen:
-                return None
-            seen.add(obj_id)
+            return _walk_mapping(obj, hint)
 
-            enabled_local = obj.get("enabled")
-            if isinstance(enabled_local, bool):
-                hint = enabled_local
-
-            ports = _normalize_port_list(obj.get("portSecurityList"))
-            if ports is not None:
-                return {
-                    "portSecurityList": ports,
-                    "enabled": bool(enabled_local)
-                    if isinstance(enabled_local, bool)
-                    else bool(hint)
-                    if isinstance(hint, bool)
-                    else True,
-                }
-
-            for key in (
-                "PortSecurity",
-                "value",
-                "data",
-                "NetworkSecurityProtection",
-            ):
-                if key in obj:
-                    candidate = _walk(obj[key], hint)
-                    if candidate:
-                        if "enabled" not in candidate and isinstance(hint, bool):
-                            candidate["enabled"] = hint
-                        return candidate
-
-            for value in obj.values():
-                candidate = _walk(value, hint)
-                if candidate:
-                    if "enabled" not in candidate and isinstance(hint, bool):
-                        candidate["enabled"] = hint
-                    return candidate
-
-        elif isinstance(obj, Iterable):
-            for item in obj:
-                candidate = _walk(item, hint)
-                if candidate:
-                    return candidate
+        if isinstance(obj, Iterable) and not isinstance(obj, (str, bytes, bytearray)):
+            return _walk_iterable(obj, hint)
 
         return None
 
@@ -318,10 +344,9 @@ def display_mode_value(camera_data: Mapping[str, Any]) -> int:
     display_mode = optionals.get("display_mode")
     display_mode = decode_json(display_mode)
 
-    if isinstance(display_mode, Mapping):
-        mode = display_mode.get("mode")
-    else:
-        mode = display_mode
+    mode = (
+        display_mode.get("mode") if isinstance(display_mode, Mapping) else display_mode
+    )
 
     if isinstance(mode, int) and mode in (1, 2, 3):
         return mode

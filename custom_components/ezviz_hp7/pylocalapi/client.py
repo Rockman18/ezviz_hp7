@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from datetime import datetime
+from collections.abc import Callable, Iterable, Mapping
+import datetime as dt
 import hashlib
 import json
 import logging
-from typing import Any, ClassVar, TypedDict, cast
+from typing import Any, ClassVar, NotRequired, TypedDict, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -70,6 +70,7 @@ from .api_endpoints import (
     API_ENDPOINT_PANORAMIC_DEVICES_OPERATION,
     API_ENDPOINT_PTZCONTROL,
     API_ENDPOINT_REFRESH_SESSION_ID,
+    API_ENDPOINT_REMOTE_LOCK,
     API_ENDPOINT_REMOTE_UNBIND_PROGRESS,
     API_ENDPOINT_REMOTE_UNLOCK,
     API_ENDPOINT_RETURN_PANORAMIC,
@@ -110,13 +111,13 @@ from .camera import EzvizCamera
 from .cas import EzvizCAS
 from .constants import (
     DEFAULT_TIMEOUT,
+    DEFAULT_UNIFIEDMSG_STYPE,
     FEATURE_CODE,
     MAX_RETRIES,
     REQUEST_HEADER,
     DefenseModeType,
     DeviceCatagories,
     DeviceSwitchType,
-    MessageFilterType,
 )
 from .exceptions import (
     DeviceException,
@@ -134,15 +135,18 @@ from .utils import convert_to_dict, deep_merge
 
 _LOGGER = logging.getLogger(__name__)
 
+UNIFIEDMSG_LOOKBACK_DAYS = 7
+MAX_UNIFIEDMSG_PAGES = 6
 
-class ClientToken(TypedDict, total=False):
+
+class ClientToken(TypedDict):
     """Typed shape for the Ezviz client token."""
 
-    session_id: str | None
-    rf_session_id: str | None
-    username: str | None
+    session_id: NotRequired[str | None]
+    rf_session_id: NotRequired[str | None]
+    username: NotRequired[str | None]
     api_url: str
-    service_urls: dict[str, Any]
+    service_urls: NotRequired[dict[str, Any]]
 
 
 class MetaDict(TypedDict, total=False):
@@ -249,6 +253,7 @@ class EzvizClient:
         self._cameras: dict[str, Any] = {}
         self._light_bulbs: dict[str, Any] = {}
         self.mqtt_client: MQTTClient | None = None
+        self._debug_request_counters: dict[str, int] = {}
 
     def _login(self, smscode: int | None = None) -> dict[Any, Any]:
         """Login to Ezviz API."""
@@ -357,6 +362,15 @@ class EzvizClient:
         individual endpoint behavior. Returns the Response for the caller to
         parse and validate according to its API contract.
         """
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "HTTP %s %s params=%s data=%s json=%s",
+                method,
+                url,
+                self._summarize_payload(params),
+                self._summarize_payload(data),
+                self._summarize_payload(json_body),
+            )
         try:
             req = self._session.request(
                 method=method,
@@ -388,6 +402,17 @@ class EzvizClient:
                 )
             raise HTTPError from err
         else:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                content_length = req.headers.get("Content-Length")
+                if content_length is None:
+                    content_length = str(len(req.content))
+                _LOGGER.debug(
+                    "HTTP %s %s -> %s (%s bytes)",
+                    method,
+                    url,
+                    req.status_code,
+                    content_length,
+                )
             return req
 
     @staticmethod
@@ -466,12 +491,37 @@ class EzvizClient:
             return payload.get("status")
         return None
 
+    @staticmethod
+    def _summarize_payload(payload: Any) -> str:
+        """Return a compact description of payload content for debug logs."""
+
+        if payload is None:
+            return "-"
+        if isinstance(payload, Mapping):
+            keys = ", ".join(sorted(str(key) for key in payload))
+            return f"dict[{keys}]"
+        if isinstance(payload, (list, tuple, set)):
+            return f"{type(payload).__name__}(len={len(payload)})"
+        if isinstance(payload, (bytes, bytearray)):
+            return f"bytes(len={len(payload)})"
+        if isinstance(payload, str):
+            trimmed = payload[:32] + "…" if len(payload) > 32 else payload
+            return f"str(len={len(payload)}, preview={trimmed!r})"
+        return f"{type(payload).__name__}"
+
     def _ensure_ok(self, payload: dict, message: str) -> None:
         """Raise PyEzvizError with context if response is not OK.
 
         Accepts both API styles: new (meta.code == 200) and legacy (resultCode == 0).
         """
         if not self._is_ok(payload):
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "API error detected (%s): code=%s payload=%s",
+                    message,
+                    self._response_code(payload),
+                    json.dumps(payload, ensure_ascii=False),
+                )
             raise PyEzvizError(f"{message}: Got {payload})")
 
     def _send_prepared(
@@ -530,7 +580,17 @@ class EzvizClient:
             retry_401=retry_401,
             max_retries=max_retries,
         )
-        return self._parse_json(resp)
+        payload = self._parse_json(resp)
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "JSON %s %s -> status=%s meta=%s keys=%s",
+                method,
+                path,
+                resp.status_code,
+                self._response_code(payload),
+                ", ".join(sorted(payload.keys())),
+            )
+        return payload
 
     def _retry_json(
         self,
@@ -697,34 +757,93 @@ class EzvizClient:
     def get_device_messages_list(
         self,
         serials: str | None = None,
-        s_type: int = MessageFilterType.FILTER_TYPE_ALL_ALARM.value,
-        limit: int | None = 20,  # 50 is the max even if you set it higher
-        date: str = datetime.today().strftime("%Y%m%d"),
-        end_time: str | None = None,
-        tags: str = "ALL",
+        s_type: str | int | Iterable[str | int] | None = DEFAULT_UNIFIEDMSG_STYPE,
+        *,
+        limit: int = 20,
+        date: str | dt.date | dt.datetime | None = None,
+        end_time: str | int | None = "",
         max_retries: int = 0,
     ) -> dict:
-        """Get data from Unified message list API."""
+        r"""Return unified alarm/message list for the requested devices.
+
+        Args:
+            serials: Optional CSV string of serial numbers. ``None`` returns all.
+            s_type: Can be a string, int, iterable of either, or
+                :class:`~pyezvizapi.constants.UnifiedMessageSubtype`.
+            limit: Clamp between 1 and 50 as enforced by the public API.
+            date: Accepts ``YYYYMMDD`` string, :class:`datetime.date`, or
+                :class:`datetime.datetime`. Defaults to "today" in API format.
+            end_time: Pass the ``msgId`` (string) returned by the previous call
+                for pagination. The mobile app sends an empty string to fetch the
+                most recent message, so ``""`` is preserved on purpose here.
+            max_retries: Number of additional attempts when the backend reports
+                temporary failures. Capped by :data:`MAX_RETRIES`.
+        """
         if max_retries > MAX_RETRIES:
             raise PyEzvizError("Can't gather proper data. Max retries exceeded.")
 
-        params: dict[str, int | str | None] = {
+        def _stringify(value: Any) -> str:
+            raw = getattr(value, "value", value)
+            return str(raw)
+
+        stype_param: str | None
+        if s_type is None:
+            stype_param = DEFAULT_UNIFIEDMSG_STYPE
+        elif isinstance(s_type, str):
+            stype_param = s_type
+        elif isinstance(s_type, Iterable) and not isinstance(
+            s_type, (bytes, bytearray)
+        ):
+            parts = [_stringify(item) for item in s_type if item not in (None, "")]
+            stype_param = ",".join(parts) if parts else DEFAULT_UNIFIEDMSG_STYPE
+        else:
+            stype_param = _stringify(s_type)
+
+        if date is None:
+            date_value = dt.datetime.now().strftime("%Y%m%d")
+        elif isinstance(date, (dt.date, dt.datetime)):
+            date_value = date.strftime("%Y%m%d")
+        else:
+            date_value = str(date)
+
+        try:
+            limit_value = max(1, min(int(limit), 50))
+        except (TypeError, ValueError):
+            limit_value = 20
+
+        end_time_value: str = "" if end_time is None else str(end_time)
+
+        params: dict[str, Any] = {
             "serials": serials,
-            "stype": s_type,
-            "limit": limit,
-            "date": date,
-            "endTime": end_time,
-            "tags": tags,
+            "stype": stype_param,
+            "limit": limit_value,
+            "date": date_value,
+            "endTime": end_time_value,
         }
+        filtered_params = {k: v for k, v in params.items() if v not in (None, "")}
+        # keep empty string endTime to mimic app behavior
+        if end_time_value == "":
+            filtered_params["endTime"] = ""
 
         json_output = self._request_json(
             "GET",
             API_ENDPOINT_UNIFIEDMSG_LIST_GET,
-            params=params,
+            params=filtered_params,
             retry_401=True,
             max_retries=max_retries,
         )
         self._ensure_ok(json_output, "Could not get unified message list")
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            counter_key = "unifiedmsg"
+            self._debug_request_counters[counter_key] = (
+                self._debug_request_counters.get(counter_key, 0) + 1
+            )
+            _LOGGER.debug(
+                "req_counter[%s]=%s params=%s",
+                counter_key,
+                self._debug_request_counters[counter_key],
+                filtered_params,
+            )
         return json_output
 
     def add_device(
@@ -2071,6 +2190,26 @@ class EzvizClient:
         records = cast(dict[str, EzvizDeviceRecord], self.get_device_records(None))
         supported_categories = self.SUPPORTED_CATEGORIES
 
+        def _is_supported_camera(rec: EzvizDeviceRecord) -> bool:
+            """Return True if record should be treated as a camera."""
+            if rec.device_category not in supported_categories:
+                return False
+            if rec.device_category == DeviceCatagories.LIGHTING.value:
+                return False
+            return not (
+                rec.device_category == DeviceCatagories.COMMON_DEVICE_CATEGORY.value
+                and not ((rec.raw.get("deviceInfos") or {}).get("hik"))
+            )
+
+        latest_alarms: dict[str, dict[str, Any]] = {}
+        if refresh:
+            camera_serials = [
+                serial
+                for serial, record in records.items()
+                if _is_supported_camera(record)
+            ]
+            latest_alarms = self._prefetch_latest_camera_alarms(camera_serials)
+
         for device, rec in records.items():
             if rec.device_category in supported_categories:
                 # Add support for connected HikVision cameras
@@ -2091,7 +2230,7 @@ class EzvizClient:
                         KeyError,
                         TypeError,
                         ValueError,
-                    ) as err:  # pragma: no cover - defensive
+                    ) as err:
                         _LOGGER.warning(
                             "Load_device_failed: serial=%s code=%s msg=%s",
                             device,
@@ -2102,14 +2241,17 @@ class EzvizClient:
                     try:
                         # Create camera object
                         cam = EzvizCamera(self, device, dict(rec.raw))
-                        self._cameras[device] = cam.status(refresh=refresh)
+                        self._cameras[device] = cam.status(
+                            refresh=refresh,
+                            latest_alarm=latest_alarms.get(device),
+                        )
 
                     except (
                         PyEzvizError,
                         KeyError,
                         TypeError,
                         ValueError,
-                    ) as err:  # pragma: no cover - defensive
+                    ) as err:
                         _LOGGER.warning(
                             "Load_device_failed: serial=%s code=%s msg=%s",
                             device,
@@ -2117,6 +2259,99 @@ class EzvizClient:
                             str(err),
                         )
         return {**self._cameras, **self._light_bulbs}
+
+    def _prefetch_latest_camera_alarms(
+        self, serials: Iterable[str], *, chunk_size: int = 20
+    ) -> dict[str, dict[str, Any]]:
+        """Attempt to fetch the most recent unified message per camera serial."""
+        serial_list = [serial for serial in serials if serial]
+        if not serial_list:
+            return {}
+
+        latest: dict[str, dict[str, Any]] = {}
+
+        def _query_chunk(
+            missing: set[str], limit: int, *, filtered: bool
+        ) -> None:
+            """Populate latest alarms for a given chunk, retrying a few times."""
+            attempts = 0
+            while missing and attempts < MAX_UNIFIEDMSG_PAGES:
+                attempts += 1
+                serial_param = None if not filtered else ",".join(sorted(missing))
+                try:
+                    response = self.get_device_messages_list(
+                        serials=serial_param,
+                        limit=limit,
+                        date="",
+                        end_time="",
+                        max_retries=1,
+                    )
+                except PyEzvizError as err:
+                    _LOGGER.debug(
+                        "alarm_prefetch_failed: serials=%s error=%r",
+                        serial_param or "",
+                        err,
+                    )
+                    return
+
+                items = response.get("message") or response.get("messages") or []
+                if not isinstance(items, list) or not items:
+                    return
+
+                matched = 0
+                for item in items:
+                    serial = item.get("deviceSerial")
+                    if (
+                        isinstance(serial, str)
+                        and serial in missing
+                        and serial not in latest
+                    ):
+                        latest[serial] = item
+                        missing.discard(serial)
+                        matched += 1
+
+                # If this filtered call returned fewer entries than we still need,
+                # assume remaining serials truly have no data and stop retrying.
+                if filtered and matched < len(missing):
+                    return
+
+                if not response.get("hasNext"):
+                    return
+
+        remaining_serials = set(serial_list)
+
+        # First, try a global fetch without serial filtering to capture the freshest alarms
+        before = set(remaining_serials)
+        _query_chunk(remaining_serials, limit=50, filtered=False)
+        satisfied = before - remaining_serials
+        if satisfied:
+            remaining_serials.difference_update(satisfied)
+
+        for start_idx in range(0, len(serial_list), chunk_size):
+            chunk = [
+                serial
+                for serial in serial_list[start_idx : start_idx + chunk_size]
+                if serial
+            ]
+            if not chunk:
+                continue
+            remaining = {serial for serial in chunk if serial in remaining_serials}
+            if not remaining:
+                continue
+            chunk_key = ",".join(chunk)
+            limit = min(50, max(len(chunk), 20))
+            before_chunk = set(remaining)
+            _query_chunk(remaining, limit, filtered=True)
+            satisfied_chunk = before_chunk - remaining
+            if satisfied_chunk:
+                remaining_serials.difference_update(satisfied_chunk)
+            if remaining:
+                _LOGGER.debug(
+                    "alarm_prefetch_incomplete: serials=%s missing=%s",
+                    chunk_key,
+                    ",".join(sorted(remaining)),
+                )
+        return latest
 
     def load_cameras(self, refresh: bool = True) -> dict[Any, Any]:
         """Load and return all camera status mappings.
@@ -2576,13 +2811,30 @@ class EzvizClient:
         self._ensure_ok(json_output, "Could not get door lock users")
         return json_output
 
-    def remote_unlock(self, serial: str, user_id: str, lock_no: int) -> bool:
+    def remote_unlock(
+        self,
+        serial: str,
+        user_id: str,
+        lock_no: int,
+        *,
+        resource_id: str | None = None,
+        local_index: str | int | None = None,
+        stream_token: str | None = None,
+        lock_type: str | None = None,
+    ) -> bool:
         """Sends a remote command to unlock a specific lock.
 
         Args:
             serial (str): The camera serial.
             user_id (str): The user id.
             lock_no (int): The lock number.
+            resource_id (str, optional): Resource identifier reported by the device
+                (for example ``Video`` or ``DoorLock``). Defaults to ``"Video"``.
+            local_index (str | int, optional): Local channel index for the lock.
+                Defaults to ``"1"``.
+            stream_token (str, optional): Stream token associated with the lock if
+                provided by the API. Defaults to empty string when omitted.
+            lock_type (str, optional): Optional lock type hint used by some devices.
 
         Raises:
             PyEzvizError: If max retries are exceeded or if the response indicates failure.
@@ -2592,17 +2844,20 @@ class EzvizClient:
             bool: True if the operation was successful.
 
         """
-        payload = {
-            "unLockInfo": {
-                "bindCode": f"{FEATURE_CODE}{user_id}",
-                "lockNo": lock_no,
-                "streamToken": "",
-                "userName": user_id,
-            }
+        route_resource = resource_id or "Video"
+        route_index = str(local_index if local_index is not None else 1)
+        un_lock_info: dict[str, Any] = {
+            "bindCode": f"{FEATURE_CODE}{user_id}",
+            "lockNo": lock_no,
+            "streamToken": stream_token or "",
+            "userName": user_id,
         }
+        if lock_type:
+            un_lock_info["type"] = lock_type
+        payload = {"unLockInfo": un_lock_info}
         json_result = self._request_json(
             "PUT",
-            f"{API_ENDPOINT_IOT_ACTION}{serial}{API_ENDPOINT_REMOTE_UNLOCK}",
+            f"{API_ENDPOINT_IOT_ACTION}{serial}/{route_resource}/{route_index}{API_ENDPOINT_REMOTE_UNLOCK}",
             json_body=payload,
             retry_401=True,
             max_retries=0,
@@ -2612,6 +2867,45 @@ class EzvizClient:
             serial,
             self._response_code(json_result),
             "remote_unlock",
+        )
+        return True
+
+    def remote_lock(
+        self,
+        serial: str,
+        user_id: str,
+        lock_no: int,
+        *,
+        resource_id: str | None = None,
+        local_index: str | int | None = None,
+        stream_token: str | None = None,
+        lock_type: str | None = None,
+    ) -> bool:
+        """Send a remote lock command to a specific lock."""
+
+        route_resource = resource_id or "Video"
+        route_index = str(local_index if local_index is not None else 1)
+        un_lock_info: dict[str, Any] = {
+            "bindCode": f"{FEATURE_CODE}{user_id}",
+            "lockNo": lock_no,
+            "streamToken": stream_token or "",
+            "userName": user_id,
+        }
+        if lock_type:
+            un_lock_info["type"] = lock_type
+        payload = {"unLockInfo": un_lock_info}
+        json_result = self._request_json(
+            "PUT",
+            f"{API_ENDPOINT_IOT_ACTION}{serial}/{route_resource}/{route_index}{API_ENDPOINT_REMOTE_LOCK}",
+            json_body=payload,
+            retry_401=True,
+            max_retries=0,
+        )
+        _LOGGER.debug(
+            "http_debug: serial=%s code=%s msg=%s",
+            serial,
+            self._response_code(json_result),
+            "remote_lock",
         )
         return True
 
@@ -4397,6 +4691,16 @@ class EzvizClient:
             "FEATURE_INFO",
             json_key=None,
         )
+
+    def get_page_list(self) -> Any:
+        """Return the full pagelist payload without filtering."""
+
+        return self._get_page_list()
+
+    def export_token(self) -> dict[str, Any]:
+        """Return a shallow copy of the current authentication token."""
+
+        return dict(self._token)
 
     def get_device(self) -> Any:
         """Get ezviz devices filter."""

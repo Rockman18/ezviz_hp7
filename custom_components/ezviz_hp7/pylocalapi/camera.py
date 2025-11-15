@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+DEFAULT_ALARM_IMAGE_URL = (
+    "https://eustatics.ezvizlife.com/ovs_mall/web/img/index/EZVIZ_logo.png?ver=3007907502"
+)
+UNIFIEDMSG_LOOKBACK_DAYS = 7
+
 
 class CameraStatus(TypedDict, total=False):
     """Typed mapping for Ezviz camera status payload."""
@@ -133,25 +138,54 @@ class EzvizCamera:
         """Fetch dictionary key."""
         return fetch_nested_value(self._device, keys, default_value)
 
-    def _alarm_list(self) -> None:
-        """Get last alarm info for this camera's self._serial.
+    def _alarm_list(self, prefetched: dict[str, Any] | None = None) -> None:
+        """Populate last alarm info for this camera.
+
+        Args:
+            prefetched: Optional unified message payload provided by the caller to
+                avoid an extra API request. When ``None``, the camera will query the
+                cloud API directly with a short date lookback window.
 
         Raises:
             InvalidURL: If the API endpoint/connection is invalid.
             HTTPError: If the API returns a non-success HTTP status.
             PyEzvizError: On Ezviz API contract errors or decoding failures.
         """
-        _alarmlist = self._client.get_alarminfo(self._serial)
-
-        total = fetch_nested_value(_alarmlist, ["page", "totalResults"], 0)
-        if total and total > 0:
-            self._last_alarm = _alarmlist.get("alarms", [{}])[0]
+        if prefetched:
+            self._last_alarm = self._normalize_unified_message(prefetched)
             _LOGGER.debug(
-                "Fetched last alarm for %s: %s", self._serial, self._last_alarm
+                "Using prefetched alarm for %s: %s", self._serial, self._last_alarm
             )
             self._motion_trigger()
-        else:
-            _LOGGER.debug("No alarms found for %s", self._serial)
+            return
+
+        response = self._client.get_device_messages_list(
+            serials=self._serial,
+            limit=1,
+            date="",
+            end_time="",
+        )
+        messages = response.get("message") or response.get("messages") or []
+        if not isinstance(messages, list):
+            messages = []
+        latest_message = next(
+            (
+                msg
+                for msg in messages
+                if isinstance(msg, dict)
+                and msg.get("deviceSerial") == self._serial
+            ),
+            None,
+        )
+        if latest_message is None:
+            _LOGGER.debug(
+                "No unified messages found for %s today",
+                self._serial,
+            )
+            return
+        self._last_alarm = self._normalize_unified_message(latest_message)
+        _LOGGER.debug("Fetched last alarm for %s: %s", self._serial, self._last_alarm)
+        self._motion_trigger()
 
     def _local_ip(self) -> str:
         """Fix empty ip value for certain cameras."""
@@ -170,6 +204,36 @@ class EzvizCamera:
 
         return "0.0.0.0"
 
+    def _resource_route(
+        self,
+    ) -> tuple[str, str, str | None, str | None]:
+        """Return resource id, local index, stream token, and optional type."""
+        resource_infos = self._device.get("resourceInfos") or []
+        info: dict[str, Any] | None = None
+        if isinstance(resource_infos, list):
+            info = next((item for item in resource_infos if isinstance(item, dict)), None)
+        elif isinstance(resource_infos, dict):
+            info = next(
+                (item for item in resource_infos.values() if isinstance(item, dict)), None
+            )
+
+        resource_id = "Video"
+        local_index: str = "1"
+        stream_token: str | None = None
+        lock_type: str | None = None
+
+        if info:
+            if isinstance(info.get("resourceId"), str):
+                resource_id = info["resourceId"]
+            local_idx_value = info.get("localIndex")
+            if isinstance(local_idx_value, (int, str)):
+                local_index = str(local_idx_value)
+            stream_token = info.get("streamToken")
+            if isinstance(info.get("type"), str):
+                lock_type = info["type"]
+
+        return resource_id, local_index, stream_token, lock_type
+
     def _motion_trigger(self) -> None:
         """Create motion sensor based on last alarm time.
 
@@ -184,6 +248,68 @@ class EzvizCamera:
             "alarm_trigger_active": active,
             "timepassed": seconds_out,
             "last_alarm_time_str": last_alarm_str,
+        }
+
+    def _normalize_unified_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Normalize unified message payload to legacy alarm shape."""
+        ext = message.get("ext")
+        if not isinstance(ext, dict):
+            ext = {}
+
+        pics_field = ext.get("pics")
+        multi_pic = None
+        if isinstance(pics_field, str) and pics_field:
+            multi_pic = next(
+                (part for part in pics_field.split(";") if part), None
+            )
+
+        def _first_valid(*candidates: Any) -> str:
+            for candidate in candidates:
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+            return DEFAULT_ALARM_IMAGE_URL
+
+        pic_url = _first_valid(
+            message.get("pic"),
+            multi_pic,
+            message.get("defaultPic"),
+        )
+
+        alarm_name = (
+            message.get("title")
+            or message.get("detail")
+            or message.get("sampleName")
+            or "NoAlarm"
+        )
+        alarm_type = ext.get("alarmType") or message.get("subType") or "0000"
+
+        time_value: Any = message.get("time")
+        if isinstance(time_value, str):
+            try:
+                time_value = int(time_value)
+            except (TypeError, ValueError):
+                try:
+                    time_value = float(time_value)
+                except (TypeError, ValueError):
+                    time_value = None
+
+        time_str = message.get("timeStr") or ext.get("alarmStartTime")
+
+        return {
+            "alarmId": message.get("msgId"),
+            "deviceSerial": message.get("deviceSerial"),
+            "channel": message.get("channel"),
+            "alarmStartTime": time_value,
+            "alarmStartTimeStr": time_str,
+            "alarmTime": time_value,
+            "alarmTimeStr": time_str,
+            "picUrl": pic_url,
+            "picChecksum": message.get("picChecksum") or ext.get("picChecksum"),
+            "picCrypt": message.get("picCrypt") or ext.get("picCrypt"),
+            "sampleName": alarm_name,
+            "alarmType": alarm_type,
+            "msgSource": "unifiedmsg",
+            "ext": ext,
         }
 
     def _get_tzinfo(self) -> datetime.tzinfo:
@@ -204,10 +330,17 @@ class EzvizCamera:
         )
         return bool(sched and sched.get("enable"))
 
-    def status(self, refresh: bool = True) -> CameraStatus:
+    def status(
+        self,
+        refresh: bool = True,
+        *,
+        latest_alarm: dict[str, Any] | None = None,
+    ) -> CameraStatus:
         """Return the status of the camera.
 
         refresh: if True, updates alarm info via network before composing status.
+        latest_alarm: Optional prefetched unified message payload to avoid an extra
+            HTTP request when ``refresh`` is True.
 
         Raises:
             InvalidURL: If the API endpoint/connection is invalid while refreshing.
@@ -215,7 +348,7 @@ class EzvizCamera:
             PyEzvizError: On Ezviz API contract errors or decoding failures.
         """
         if refresh:
-            self._alarm_list()
+            self._alarm_list(prefetched=latest_alarm)
 
         name = (
             self._record.name
@@ -301,7 +434,7 @@ class EzvizCamera:
             or self._last_alarm.get("alarmStartTimeStr"),
             "last_alarm_pic": self._last_alarm.get(
                 "picUrl",
-                "https://eustatics.ezvizlife.com/ovs_mall/web/img/index/EZVIZ_logo.png?ver=3007907502",
+                DEFAULT_ALARM_IMAGE_URL,
             ),
             "last_alarm_type_code": self._last_alarm.get("alarmType", "0000"),
             "last_alarm_type_name": self._last_alarm.get("sampleName", "NoAlarm"),
@@ -397,7 +530,16 @@ class EzvizCamera:
         """
         _LOGGER.debug("Remote door unlock for %s", self._serial)
         user = str(getattr(self._client, "_token", {}).get("username", ""))
-        return self._client.remote_unlock(self._serial, user, 2)
+        resource_id, local_index, stream_token, lock_type = self._resource_route()
+        return self._client.remote_unlock(
+            self._serial,
+            user,
+            2,
+            resource_id=resource_id,
+            local_index=local_index,
+            stream_token=stream_token,
+            lock_type=lock_type,
+        )
 
     def gate_unlock(self) -> bool:
         """Unlock the gate lock.
@@ -409,7 +551,46 @@ class EzvizCamera:
         """
         _LOGGER.debug("Remote gate unlock for %s", self._serial)
         user = str(getattr(self._client, "_token", {}).get("username", ""))
-        return self._client.remote_unlock(self._serial, user, 1)
+        resource_id, local_index, stream_token, lock_type = self._resource_route()
+        return self._client.remote_unlock(
+            self._serial,
+            user,
+            1,
+            resource_id=resource_id,
+            local_index=local_index,
+            stream_token=stream_token,
+            lock_type=lock_type,
+        )
+
+    def door_lock(self) -> bool:
+        """Lock the door remotely."""
+        _LOGGER.debug("Remote door lock for %s", self._serial)
+        user = str(getattr(self._client, "_token", {}).get("username", ""))
+        resource_id, local_index, stream_token, lock_type = self._resource_route()
+        return self._client.remote_lock(
+            self._serial,
+            user,
+            2,
+            resource_id=resource_id,
+            local_index=local_index,
+            stream_token=stream_token,
+            lock_type=lock_type,
+        )
+
+    def gate_lock(self) -> bool:
+        """Lock the gate remotely."""
+        _LOGGER.debug("Remote gate lock for %s", self._serial)
+        user = str(getattr(self._client, "_token", {}).get("username", ""))
+        resource_id, local_index, stream_token, lock_type = self._resource_route()
+        return self._client.remote_lock(
+            self._serial,
+            user,
+            1,
+            resource_id=resource_id,
+            local_index=local_index,
+            stream_token=stream_token,
+            lock_type=lock_type,
+        )
 
     def alarm_notify(self, enable: bool) -> bool:
         """Enable/Disable camera notification when movement is detected.

@@ -83,27 +83,27 @@ class MqttData(TypedDict):
 # Payload decoding helpers
 # ---------------------------------------------------------------------------
 
-# Field names in the comma‑separated ``ext`` payload from EZVIZ.
+# Field names in the comma-separated ``ext`` payload from EZVIZ.
 EXT_FIELD_NAMES: Final[tuple[str, ...]] = (
     "channel_type",
     "time",
     "device_serial",
     "channel_no",
     "alert_type_code",
-    "unused1",
-    "unused2",
-    "unused3",
-    "unused4",
+    "default_pic_url",
+    "media_url_alt1",
+    "media_url_alt2",
+    "resource_type",
     "status_flag",
     "file_id",
     "is_encrypted",
     "picChecksum",
-    "unknown_flag",
-    "unused5",
+    "is_dev_video",
+    "metadata",
     "msgId",
     "image",
     "device_name",
-    "unused6",
+    "reserved",
     "sequence_number",
 )
 
@@ -113,8 +113,10 @@ EXT_INT_FIELDS: Final[frozenset[str]] = frozenset(
         "channel_type",
         "channel_no",
         "alert_type_code",
+        "resource_type",
         "status_flag",
         "is_encrypted",
+        "is_dev_video",
         "sequence_number",
     }
 )
@@ -247,7 +249,7 @@ class MQTTClient:
                 # Stop background thread and disconnect
                 self.mqtt_client.loop_stop()
                 self.mqtt_client.disconnect()
-            except Exception as err:  # noqa: BLE001
+            except (OSError, ValueError, RuntimeError) as err:
                 _LOGGER.debug("MQTT disconnect failed: %s", err)
         # Always attempt to stop push on server side
         self._stop_ezviz_push()
@@ -535,13 +537,17 @@ class MQTTClient:
         """
         broker = self._mqtt_data["push_url"]
 
-        self.mqtt_client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
-            client_id=self._mqtt_data["mqtt_clientid"],
-            clean_session=clean_session,
-            protocol=mqtt.MQTTv311,
-            transport="tcp",
-        )
+        client_kwargs: dict[str, Any] = {
+            "client_id": self._mqtt_data["mqtt_clientid"],
+            "clean_session": clean_session,
+            "protocol": mqtt.MQTTv311,
+            "transport": "tcp",
+        }
+        callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+        if callback_api_version is not None:
+            client_kwargs["callback_api_version"] = callback_api_version.VERSION1
+
+        self.mqtt_client = mqtt.Client(**client_kwargs)
 
         # Bind callbacks
         self.mqtt_client.on_connect = self._on_connect

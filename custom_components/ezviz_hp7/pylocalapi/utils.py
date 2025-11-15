@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 import datetime
 from hashlib import md5
 import json
 import logging
 import re as _re
 from typing import Any
-import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from Crypto.Cipher import AES
 
+from .constants import HIK_ENCRYPTION_HEADER
 from .exceptions import PyEzvizError
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,16 +63,62 @@ def convert_to_dict(data: Any) -> Any:
 
 def string_to_list(data: Any, separator: str = ",") -> Any:
     """Convert a string representation of a list to a list."""
-    if isinstance(data, str):
-        if separator in data:
-            try:
-                # Attempt to convert the string into a list
-                return data.split(separator)
+    if isinstance(data, str) and separator in data:
+        try:
+            # Attempt to convert the string into a list
+            return data.split(separator)
 
-            except AttributeError:
-                return data
+        except AttributeError:
+            return data
 
     return data
+
+
+PathComponent = str | int
+WILDCARD_STEP = "*"
+_MISSING = object()
+MILLISECONDS_THRESHOLD = 1e11
+
+
+def iter_nested(data: Any, path: Iterable[PathComponent]) -> Iterator[Any]:
+    """Yield values reachable by following a dotted path with optional wildcards."""
+
+    current: list[Any] = [data]
+
+    for step in path:
+        next_level: list[Any] = []
+        for candidate in current:
+            if step == WILDCARD_STEP:
+                if isinstance(candidate, dict):
+                    next_level.extend(candidate.values())
+                elif isinstance(candidate, (list, tuple)):
+                    next_level.extend(candidate)
+                continue
+
+            if isinstance(candidate, dict) and step in candidate:
+                next_level.append(candidate[step])
+                continue
+
+            if (
+                isinstance(candidate, (list, tuple))
+                and isinstance(step, int)
+                and -len(candidate) <= step < len(candidate)
+            ):
+                next_level.append(candidate[step])
+
+        current = next_level
+        if not current:
+            break
+
+    yield from current
+
+
+def first_nested(
+    data: Any, path: Iterable[PathComponent], default: Any = None
+) -> Any:
+    """Return the first value produced by iter_nested or ``default``."""
+
+    return next(iter_nested(data, path), default)
 
 
 def fetch_nested_value(data: Any, keys: list, default_value: Any = None) -> Any:
@@ -88,14 +135,8 @@ def fetch_nested_value(data: Any, keys: list, default_value: Any = None) -> Any:
         The value corresponding to the nested keys or the default value.
 
     """
-    try:
-        for key in keys:
-            data = data[key]
-
-    except (KeyError, TypeError):
-        return default_value
-
-    return data
+    value = first_nested(data, keys, _MISSING)
+    return default_value if value is _MISSING else value
 
 
 def decrypt_image(input_data: bytes, password: str) -> bytes:
@@ -112,37 +153,102 @@ def decrypt_image(input_data: bytes, password: str) -> bytes:
         bytes: Decrypted image data
 
     """
-    if len(input_data) < 48:
+    header_len = len(HIK_ENCRYPTION_HEADER)
+    min_length = header_len + 32  # header + md5 hash
+
+    if len(input_data) < min_length:
         raise PyEzvizError("Invalid image data")
 
-    # check header
-    if input_data[:16] != b"hikencodepicture":
-        _LOGGER.debug("Image header doesn't contain 'hikencodepicture'")
+    header_index = input_data.find(HIK_ENCRYPTION_HEADER)
+    if header_index == -1:
+        _LOGGER.debug("Image header doesn't contain %s", HIK_ENCRYPTION_HEADER)
         return input_data
 
-    file_hash = input_data[16:48]
+    if header_index:
+        _LOGGER.debug("Image header found at offset %s, trimming preamble", header_index)
+        input_data = input_data[header_index:]
+        if len(input_data) < min_length:
+            raise PyEzvizError("Invalid image data after trimming preamble")
+
+    hash_end = header_len + 32
+    blocks = _split_encrypted_blocks(input_data, header_len, min_length)
+    if not blocks:
+        raise PyEzvizError("Invalid image data")
+
+    decrypted_parts = [
+        _decrypt_single_block(block, password, header_len, hash_end) for block in blocks
+    ]
+    if len(decrypted_parts) > 1:
+        _LOGGER.debug("Decrypted %s concatenated image blocks", len(decrypted_parts))
+    return b"".join(decrypted_parts)
+
+
+def _split_encrypted_blocks(
+    data: bytes, header_len: int, min_length: int
+) -> list[bytes]:
+    """Split concatenated hikencodepicture segments into individual blocks."""
+    blocks: list[bytes] = []
+    cursor = 0
+    data_len = len(data)
+
+    while cursor <= data_len - min_length:
+        if data[cursor : cursor + header_len] != HIK_ENCRYPTION_HEADER:
+            next_header = data.find(HIK_ENCRYPTION_HEADER, cursor + 1)
+            if next_header == -1:
+                break
+            cursor = next_header
+            continue
+
+        next_header = data.find(HIK_ENCRYPTION_HEADER, cursor + header_len)
+        block = data[cursor : next_header if next_header != -1 else data_len]
+        if len(block) < min_length:
+            break
+        blocks.append(block)
+        if next_header == -1:
+            break
+        cursor = next_header
+
+    return blocks
+
+
+def _decrypt_single_block(
+    block: bytes, password: str, header_len: int, hash_end: int
+) -> bytes:
+    """Decrypt a single hikencodepicture block."""
+    file_hash = block[header_len:hash_end]
     passwd_hash = md5(str.encode(md5(str.encode(password)).hexdigest())).hexdigest()
     if file_hash != str.encode(passwd_hash):
         raise PyEzvizError("Invalid password")
+
+    ciphertext = block[hash_end:]
+    if not ciphertext:
+        raise PyEzvizError("Missing ciphertext payload")
+
+    remainder = len(ciphertext) % AES.block_size
+    if remainder:
+        _LOGGER.debug(
+            "Ciphertext not aligned to 16 bytes; trimming %s trailing bytes", remainder
+        )
+        ciphertext = ciphertext[:-remainder]
+    if not ciphertext:
+        raise PyEzvizError("Ciphertext too short after alignment adjustment")
 
     key = str.encode(password.ljust(16, "\u0000")[:16])
     iv_code = bytes([48, 49, 50, 51, 52, 53, 54, 55, 0, 0, 0, 0, 0, 0, 0, 0])
     cipher = AES.new(key, AES.MODE_CBC, iv_code)
 
-    next_chunk = b""
-    output_data = b""
-    finished = False
-    i = 48  # offset hikencodepicture + hash
     chunk_size = 1024 * AES.block_size
-    while not finished:
-        chunk, next_chunk = next_chunk, cipher.decrypt(input_data[i : i + chunk_size])
-        if len(next_chunk) == 0:
-            padding_length = chunk[-1]
-            chunk = chunk[:-padding_length]
-            finished = True
-        output_data += chunk
-        i += chunk_size
-    return output_data
+    output_data = bytearray()
+
+    for start in range(0, len(ciphertext), chunk_size):
+        block_chunk = cipher.decrypt(ciphertext[start : start + chunk_size])
+        if start + chunk_size >= len(ciphertext):
+            padding_length = block_chunk[-1]
+            block_chunk = block_chunk[:-padding_length]
+        output_data.extend(block_chunk)
+
+    return bytes(output_data)
+
 
 
 def return_password_hash(password: str) -> str:
@@ -195,30 +301,6 @@ def deep_merge(dict1: Any, dict2: Any) -> Any:
     return merged
 
 
-def generate_unique_code() -> str:
-    """Generate a deterministic, platform-agnostic unique code for the current host.
-
-    This function retrieves the host's MAC address using Python's standard
-    `uuid.getnode()` (works on Windows, Linux, macOS), converts it to a
-    canonical string representation, and then hashes it using MD5 to produce
-    a fixed-length hexadecimal string.
-
-    Returns:
-        str: A 32-character hexadecimal string uniquely representing
-        the host's MAC address. For example:
-        'a94e6756hghjgfghg49e0f310d9e44a'.
-
-    Notes:
-        - The output is deterministic: the same machine returns the same code.
-        - If the MAC address changes (e.g., different network adapter),
-          the output will change.
-        - MD5 is used here only for ID generation, not for security.
-    """
-    mac_int = uuid.getnode()
-    mac_str = ":".join(f"{(mac_int >> i) & 0xFF:02x}" for i in range(40, -1, -8))
-    return md5(mac_str.encode("utf-8")).hexdigest()
-
-
 # ---------------------------------------------------------------------------
 # Time helpers for alarm/motion handling
 # ---------------------------------------------------------------------------
@@ -255,7 +337,7 @@ def normalize_alarm_time(
     if epoch is not None:
         try:
             ts = float(epoch if not isinstance(epoch, str) else float(epoch))
-            if ts > 1e11:  # milliseconds
+            if ts > MILLISECONDS_THRESHOLD:  # milliseconds
                 ts /= 1000.0
             event_utc = datetime.datetime.fromtimestamp(ts, tz=datetime.UTC)
             alarm_dt_local = event_utc.astimezone(tzinfo)
@@ -322,10 +404,11 @@ def compute_motion_from_alarm(
     now_local = datetime.datetime.now(tz=tzinfo).replace(microsecond=0)
     now_utc = datetime.datetime.now(tz=datetime.UTC).replace(microsecond=0)
 
-    if alarm_dt_utc is not None:
-        delta = now_utc - alarm_dt_utc
-    else:
-        delta = now_local - alarm_dt_local
+    delta = (
+        now_utc - alarm_dt_utc
+        if alarm_dt_utc is not None
+        else now_local - alarm_dt_local
+    )
 
     seconds = float(delta.total_seconds())
     if seconds < 0:
